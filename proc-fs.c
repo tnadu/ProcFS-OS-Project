@@ -7,6 +7,8 @@
 #include <sys/types.h>
 #include <time.h>
 #include <string.h>
+#include <limits.h>
+
 
 
 typedef struct proc {
@@ -46,6 +48,15 @@ int constructTreeOfProcesses(process *root, int PID) {
 }
 
 
+// DESCRIPTION
+// 'returnedProcess' holds:
+//  - the pointer to the specified process, if the path is valid
+//  - NULL, otherwise
+//
+// return values:
+//  - '-1' -> invalid path
+//  - '0' -> a process's dir was requested
+//  - '1' -> the 'stats' file of a process was requested
 int getProcess(char *path, process **returnedProcess) {
     // all paths must begin from the root of the file system
     if (*path != '/') {
@@ -142,7 +153,36 @@ static int _getattr(const char *path, struct stat *status);
 static int _readdir(const char *path, void *buffer, fuse_fill_dir_t, off_t offset, struct fuse_file_info *fileInfo);
 
 
-static int _read(const char *path, char *buffer, size_t, off_t, struct  fuse_file_info *fileInfo);
+static int _read(const char *path, char *buffer, size_t size, off_t offset, struct  fuse_file_info *fileInfo) {
+    process *requestedProcess;
+    int returnNumber = getProcess(path, &requestedProcess);
+
+    // path is either invalid or requested item is a directory
+    if (returnNumber == -1 || returnNumber == 0)
+        return -1;
+
+    // when offset is at or after the end of file or when size is 0,
+    // the specification of 'read' mentions that '0' shall be returned
+    if (strlen(requestedProcess->status) <= offset || size == 0)
+        return 0;
+
+    // the specification of 'read' mentions that when the sizes
+    // of the offset and the number-of-bytes-to-be-copied is larger
+    // than SSIZE_MAX, the behaviour is implementation-defined;
+    // therefore, I made sure the maximum amount of bytes which
+    // can be copied is precisely that constant
+    offset = (offset < SSIZE_MAX) ? offset : SSIZE_MAX;
+    size = (size < SSIZE_MAX) ? size : SSIZE_MAX;
+
+    // the number of bytes which can be copied cannot exceed the total size
+    // of the source - the size of the offset;
+    size_t numberOfBytesCopied = (size < strlen(requestedProcess->status) - offset) ? size : strlen(requestedProcess->status) - offset;
+
+    memcpy(buffer, requestedProcess->status + offset, numberOfBytesCopied);
+
+    // 'read' must return the total number of successfully copied bytes
+    return (int) numberOfBytesCopied;
+}
 
 
 static struct fuse_operations implementedOperations = {
@@ -153,8 +193,14 @@ static struct fuse_operations implementedOperations = {
 
 
 int main(int argc, char **argv) {
+    // initializing file system root
+    rootOfFS = malloc(sizeof (*rootOfFS));
+    rootOfFS->PID = -1;
+    rootOfFS->numberOfChildren = 1;
+    rootOfFS->status = NULL;
+
     int operationStatus;
-    if ((operationStatus = constructTreeOfProcesses(rootOfFS, 1)) != 0) {
+    if ((operationStatus = constructTreeOfProcesses(rootOfFS->children[0], 1)) != 0) {
         fprintf(stdout, "Tree construction failed at process #%d", operationStatus);
         fprintf(stderr, "Tree construction failed at process #%d", operationStatus);
         return 1;
