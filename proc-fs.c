@@ -149,36 +149,32 @@ int getProcess(char *path, process **returnedProcess) {
 //when the system asks for the attributes of a specific file
 static int _getattr(const char *path, struct stat *status){
     
-    process* target = getProcess(path);
+    process* target;
+    int returnStatus = getProcess(path, &target);
     
     if(target != NULL){
         
         status->st_uid = getuid(); // The owner of the file/directory is the user who mounted the filesystem
         status->st_gid = getgid(); // The group of the file/directory is the same as the group of the user who mounted the filesystem
-        //status->st_atime = time( NULL ); // The last "a"ccess of the file/directory is right now
-        //status->st_mtime = time( NULL ); // The last "m"odification of the file/directory is right now
-        
-        if ( strcmp( path, "/" ) == 0 ) // path = root directory
+        status->st_atime = time( NULL ); // The last "a"ccess of the file/directory is right now
+        status->st_mtime = time( NULL ); // The last "m"odification of the file/directory is right now
+        status->st_size = 0;
+
+        if ( returnStatus == 0 ) // path = root directory
         {
             //st_mode specifies if file is a regular file, directory or other
             status->st_mode = S_IFDIR | 0755; //directory;only the owner of the file -> write, execute the directory, other users-> read and execute 
-            status->st_nlink = 2; 
+            status->st_nlink = 2;
         }
         else
         {
-            char * ptr;
-            int ch = '/';
-            ptr = strrchr( path, ch );
-            if(ptr != NULL && strcmp("/stat", ptr) == 0){ // suntem in /../stat
-                status->st_mode = S_IFREG | 0644; // regular files; owner->read,write; others -> read
-                status->st_nlink = 1;
-                status->st_size = 1024;
-            }
+            status->st_mode = S_IFREG | 0644; // regular files; owner->read,write; others -> read
+            status->st_nlink = 1;
         }
     }
     else{ // directory / file does not exist 
         perror("operation failed: ");
-        return errno;
+        return -1;
     }
     
     return 0;
