@@ -181,7 +181,53 @@ static int _getattr(const char *path, struct stat *status){
 }
 
 
-static int _readdir(const char *path, void *buffer, fuse_fill_dir_t, off_t offset, struct fuse_file_info *fileInfo);
+static int _readdir(const char *path, void *buffer, fuse_fill_dir_t filler, off_t offset, struct fuse_file_info *fileInfo) {
+    process* target;
+    int returnStatus = getProcess(path, &target);
+
+    if(target != NULL){
+        char buf[200];
+        int index = 0;
+
+        while (buffer && *(char *) buffer != '\0')  // buf = buffer content
+        {
+            buf[index++] = *(char *) buffer;
+            (buffer)++;
+        }
+
+
+        for (int i = 0; i < target->numberOfChildren; i++)
+        {
+            int pid = target->children[i]->PID;
+            char pidChar[100];
+            int lenPid = 0;
+
+            while (pid)
+            {
+                pidChar[lenPid++] = (pid % 10) + '0';
+                pid /= 10;
+            }
+
+            while (lenPid)  // buf concatenare cu pid
+            {
+                buf[index++] = pidChar[lenPid - 1];
+                lenPid--;
+            }
+
+            buf[index++] = '/';
+        }
+
+        buf[index++] = '\0';
+
+        buffer = buf; // buffer points to the new location
+    }
+    else{
+        perror("operation failed: ");
+        return -1;
+    }
+
+    return 0;
+}
 
 
 static int _read(const char *path, char *buffer, size_t size, off_t offset, struct  fuse_file_info *fileInfo) {
