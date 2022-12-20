@@ -68,7 +68,7 @@ int setStatus(process *process) {
 
             close(pipeFD[1]);          // Parent won't write on the pipe
 
-            process->status = malloc(sizeof(char) * 3000);
+            process->status = (char *) malloc(sizeof(char) * 3000);
 
             int StatusOffset = 0;
             // use pipeFD[0] to read from the pipe
@@ -88,8 +88,8 @@ int constructTreeOfProcesses(process *process) {
     if (operationStatus != 0)
         return operationStatus;
 
-    char catPathBuff[40], PIDtoChar[8];
-    char *readBuffer = malloc(sizeof(char) * 255);
+    char catPathBuff[200], PIDtoChar[40];
+    char *readBuffer = (char *) malloc(sizeof(char) * 255);
 
     // Construct the correct path to the file that contains
     // the children processes
@@ -261,7 +261,8 @@ int getProcess(char *path, process **returnedProcess) {
 static int _getattr(const char *path, struct stat *status){
     
     process* target;
-    int returnStatus = getProcess(path, &target);
+    char *nonConstPath = (char*) malloc(sizeof(char) * strlen(path));
+    int returnStatus = getProcess(nonConstPath, &target);
     
     if(target != NULL){
         
@@ -294,7 +295,8 @@ static int _getattr(const char *path, struct stat *status){
 
 static int _readdir(const char *path, void *buffer, fuse_fill_dir_t filler, off_t offset, struct fuse_file_info *fileInfo) {
     process* target;
-    int returnStatus = getProcess(path, &target);
+    char *nonConstPath = (char*) malloc(sizeof(char) * strlen(path));
+    int returnStatus = getProcess(nonConstPath, &target);
 
     if(target != NULL){
         char buf[200];
@@ -343,7 +345,8 @@ static int _readdir(const char *path, void *buffer, fuse_fill_dir_t filler, off_
 
 static int _read(const char *path, char *buffer, size_t size, off_t offset, struct  fuse_file_info *fileInfo) {
     process *requestedProcess;
-    int returnNumber = getProcess(path, &requestedProcess);
+    char *nonConstPath = (char*) malloc(sizeof(char) * strlen(path));
+    int returnNumber = getProcess(nonConstPath, &requestedProcess);
 
     // path is either invalid or requested item is a directory
     if (returnNumber == -1 || returnNumber == 0)
@@ -381,11 +384,14 @@ static struct fuse_operations implementedOperations = {
 
 
 int main(int argc, char **argv) {
+//    printf("%s\n",);
+
     // initializing file system root
-    rootOfFS = malloc(sizeof (*rootOfFS));
+    rootOfFS = (process *) malloc(sizeof (process));
     rootOfFS->PID = -1;
     rootOfFS->numberOfChildren = 1;
     rootOfFS->status = NULL;
+    rootOfFS->children[0] = (process *) malloc(sizeof (process));
     rootOfFS->children[0]->PID = 1;
 
     int operationStatus;
