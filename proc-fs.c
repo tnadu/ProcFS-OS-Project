@@ -1,4 +1,4 @@
-#define FUSE_USE_VERSION 30
+#define FUSE_USE_VERSION 31
 
 #include <fuse.h>
 #include <stdio.h>
@@ -18,14 +18,14 @@ typedef struct proc {
 } process;
 
 process *rootOfFS;
+time_t timeOfMount;
 
 
 // Function that will use a pipe to:
 // cat /proc/PID/status -> write to the end of pipe
 // Proc.status          -> read from end of pipe
-
-int setStatus(process *process) {
-    char catPathBuff[100], PIDtoChar[20];
+void setStatus(process *process) {
+    char catPathBuff[400], PIDtoChar[20];
 
     // Construct the correct path to the status file of the process
     sprintf(PIDtoChar, "%d", process->PID);
@@ -33,130 +33,62 @@ int setStatus(process *process) {
     strcat(catPathBuff, PIDtoChar);
     strcat(catPathBuff, "/status");
 
-    // pipeFD[0] -> will refer to the read end of the pipe
-    // pipeFD[1] -> will refer to the write end of the pipe
-    // nbytes -> will be the number of bytes written at a time
-    int pipeFD[2], nbytes;
+    process->status = malloc(sizeof(char) * 6000);
 
-    if( pipe(pipeFD) == -1){
-        perror("Piping failed! Please try again.");
-        return process->PID;
-    } else{
-        pid_t pid = fork ();
-        if ( pid < 0) {
-            perror("Forking failed! Please try again.");
-            return process->PID;
-        }
-        else if ( pid == 0){
-            // Children process:
-            // -> will write to the pipe
-            // -> won't need the read end of the pipe
-            dup2(pipeFD[1], 1);         // STDOUT -> will go to the pipeFD[1], write end of the pipe
-            close(pipeFD[0]);           // Child won't read from the pipe
+    int statusFileDescriptor = open(catPathBuff, O_RDONLY);
 
-            char *cmd[] = {"cat", catPathBuff, NULL };
+    int StatusOffset = 0, nbytes;
+    while ((nbytes = read(statusFileDescriptor, process->status + StatusOffset, 255)) > 0)
+        StatusOffset += nbytes;
 
-            // first arg -> command
-            // second arg -> arguments
-            execvp(cmd[0], cmd);
-            exit(0);
-
-        } else{
-            // Parent process:
-            // -> will wait for the child to finish
-            // -> will read from the pipe, won't write on the pipe
-            wait(NULL);
-
-            close(pipeFD[1]);          // Parent won't write on the pipe
-
-            process->status = (char *) malloc(sizeof(char) * 3000);
-
-            int StatusOffset = 0;
-            // use pipeFD[0] to read from the pipe
-            while( (nbytes = read(pipeFD[0], process->status + StatusOffset, 255)) > 0){
-                StatusOffset += nbytes;
-            }
-        }
-    }
-
-    return 0;
+    close(statusFileDescriptor);
 }
+
 
 int constructTreeOfProcesses(process *process) {
     // First of all, set the status file for the current process
-    int operationStatus = setStatus(process);
+    setStatus(process);
 
-    if (operationStatus != 0)
-        return operationStatus;
-
-    char catPathBuff[200], PIDtoChar[40];
-    char *readBuffer = (char *) malloc(sizeof(char) * 2000);
+    char catPathBuff[200], PIDtoChar[20];
+    char *readBuffer = malloc(sizeof(char) * 4000);
 
     // Construct the correct path to the file that contains
     // the children processes
     sprintf(PIDtoChar, "%d", process->PID);
-    printf("\n---%s---", PIDtoChar);
     strcpy(catPathBuff, "/proc/");
     strcat(catPathBuff, PIDtoChar);
     strcat(catPathBuff, "/task/");
     strcat(catPathBuff, PIDtoChar);
     strcat(catPathBuff, "/children");
 
-    int pipeFD[2], nbytes;
-    if(pipe(pipeFD) == -1){
-        perror("Piping failed! Please try again.");
-        return process->PID;
-    } else{
-        pid_t pid = fork();
+    int childrenFileDescriptor = open(catPathBuff, O_RDONLY);
 
-        if ( pid < 0) {
-            perror("Forking failed! Please try again.");
-            return process->PID;
-        }
-        else if ( pid == 0){
-            // Children process:
-            // -> will write to the pipe
-            // -> won't need the read end of the pipe
-            dup2(pipeFD[1], 1);
-            close(pipeFD[0]);
+    int StatusOffset = 0, nbytes;
+    while ((nbytes = read(childrenFileDescriptor, readBuffer + StatusOffset, 255)) > 0) {
+        StatusOffset += nbytes;
+    }
 
-            char *cmd[] = {"cat", catPathBuff, NULL };
-            execvp(cmd[0], cmd);
+    close(childrenFileDescriptor);
 
-        } else{
-            // Parent process:
-            // -> will wait for the child to finish
-            // -> will read from the pipe, won't write on the pipe
-            wait(NULL);
+    // After we get the children processes, we need to build
+    // the Proc *children array for the current process,
+    // and recursively call this function for the children
+    int numOfChildren = 0;
+    char *childProcess = strtok(readBuffer, " ");
+    while (childProcess != NULL) {
+        // First allocate memory for the children
+        process->children[numOfChildren] = malloc(sizeof(process));
+        // Set its PID
+        process->children[numOfChildren]->PID = atoi(childProcess);
 
-            close(pipeFD[1]);
+        numOfChildren++;
+        childProcess = strtok(NULL, " ");
+    }
 
-            // use pipeFD[0] to read from the pipe
-            while( (nbytes = read(pipeFD[0], readBuffer, 255)) > 0);
+    process->numberOfChildren = numOfChildren;
 
-            // After we get the children processes, we need to build
-            // the Proc *children array for the current process,
-            // and recursively call this function for the children
-            int numOfChildren = 0;
-            char *childProcess = strtok(readBuffer, " ");
-            while(childProcess != NULL) {
-                if (atoi(childProcess) != getppid()) {
-                    // First allocate memory for the children
-                    process->children[numOfChildren] = malloc(sizeof(process));
-                    // Set its PID
-                    process->children[numOfChildren]->PID = atoi(childProcess);
-
-                    numOfChildren += 1;
-                }
-
-                childProcess = strtok(NULL, " ");
-            }
-            process->numberOfChildren = numOfChildren;
-
-            for(int i = 0; i < process->numberOfChildren; i++){
-                constructTreeOfProcesses(process->children[i]);
-            }
-        }
+    for (int i = 0; i < process->numberOfChildren; i++) {
+        constructTreeOfProcesses(process->children[i]);
     }
 
     return 0;
@@ -181,7 +113,6 @@ int getProcess(char *path, process **returnedProcess) {
 
     // used in traversing the items delimited by '/'
     char *currentItemInPath = strtok(path, "/");    // omitting the empty char
-    currentItemInPath = strtok(NULL, "/");
 
     // the provided path is the root of the FS
     if (currentItemInPath == NULL) {
@@ -216,9 +147,9 @@ int getProcess(char *path, process **returnedProcess) {
         // 'strtol' returns the result of the conversion to a numerical value of the current item in the path
         currentPID = strtol(currentItemInPath, &firstNonDigit, 0);
         // verifying that no invalid characters were encountered
-        if (firstNonDigit!=NULL && *firstNonDigit!='\0') {
+        if (firstNonDigit != NULL && *firstNonDigit != '\0') {
             // the stats file was requested in the path
-            if (strcmp(currentItemInPath, "stats") != 0) {
+            if (strcmp(currentItemInPath, "stats") == 0) {
                 statsFound = 1;
                 break;
             }
@@ -231,8 +162,8 @@ int getProcess(char *path, process **returnedProcess) {
 
         // searching the children of the current process for the child with the specified PID 
         int i, numberOfChildrenOfTheCurrentProcess = (*returnedProcess)->numberOfChildren;
-        
-        for(i = 0; i < numberOfChildrenOfTheCurrentProcess; i++)
+
+        for (i = 0; i < numberOfChildrenOfTheCurrentProcess; i++)
             // specified process was found
             if ((*returnedProcess)->children[i]->PID == currentPID) {
                 *returnedProcess = (*returnedProcess)->children[i];
@@ -263,94 +194,99 @@ int getProcess(char *path, process **returnedProcess) {
 
 
 //when the system asks for the attributes of a specific file
-static int _getattr(const char *path, struct stat *status){
-    
-    process* target;
-    char *nonConstPath = (char*) malloc(sizeof(char) * strlen(path));
+static int _getattr(const char *path, struct stat *status, struct fuse_file_info *fi) {
+    (void) fi;
+    memset(status, 0, sizeof(struct stat));
+
+    char *nonConstPath = (char *) malloc(sizeof(char) * strlen(path));
+    strcpy(nonConstPath, path);
+
+    process *target;
+
     int returnStatus = getProcess(nonConstPath, &target);
-    
-    if(target != NULL){
-        
+
+    if (target != NULL) {
         status->st_uid = getuid(); // The owner of the file/directory is the user who mounted the filesystem
         status->st_gid = getgid(); // The group of the file/directory is the same as the group of the user who mounted the filesystem
-        status->st_atime = time( NULL ); // The last "a"ccess of the file/directory is right now
-        status->st_mtime = time( NULL ); // The last "m"odification of the file/directory is right now
-        status->st_size = 0;
+        status->st_atime = timeOfMount; // The last "a"ccess of the file/directory is right now
+        status->st_mtime = timeOfMount; // The last "m"odification of the file/directory is right now
 
-        if ( returnStatus == 0 ) // path = root directory
+        if (returnStatus == 0) // path = directory
         {
             //st_mode specifies if file is a regular file, directory or other
-            status->st_mode = S_IFDIR | 0755; //directory;only the owner of the file -> write, execute the directory, other users-> read and execute 
+            status->st_mode = S_IFDIR | 0775; //directory;only the owner of the file -> write, execute the directory, other users-> read and execute
             status->st_nlink = 2;
-        }
-        else
-        {
-            status->st_mode = S_IFREG | 0644; // regular files; owner->read,write; others -> read
+        } else {
+            status->st_mode = S_IFREG | 0664; // regular files; owner->read,write; others -> read
             status->st_nlink = 1;
+            status->st_size = 0;
         }
+
+        return 0;
     }
-    else{ // directory / file does not exist 
-        perror("operation failed: ");
+    else
         return -1;
-    }
-    
-    return 0;
 }
 
 
-static int _readdir(const char *path, void *buffer, fuse_fill_dir_t filler, off_t offset, struct fuse_file_info *fileInfo) {
-    process* target;
-    char *nonConstPath = (char*) malloc(sizeof(char) * strlen(path));
+static int _readdir(const char *path, void *buffer, fuse_fill_dir_t filler, off_t offset, struct fuse_file_info *fileInfo, enum fuse_readdir_flags flags) {
+    (void) offset;
+    (void) fileInfo;
+    (void) flags;
+
+    char *nonConstPath = (char *) malloc(sizeof(char) * strlen(path));
+    strcpy(nonConstPath, path);
+
+    process *target;
     int returnStatus = getProcess(nonConstPath, &target);
 
-    if(target != NULL){
-        char buf[200];
-        int index = 0;
+    char PID[40];
+    if (returnStatus == 0) {
+        filler(buffer, ".", NULL, 0, 0);
+        filler(buffer, "..", NULL, 0, 0);
 
-        while (buffer && *(char *) buffer != '\0')  // buf = buffer content
-        {
-            buf[index++] = *(char *) buffer;
-            (buffer)++;
+        for (int i = 0; i < target->numberOfChildren; i++) {
+            sprintf(PID, "%d", target->children[i]->PID);
+            filler(buffer, PID, NULL, 0, 0);
+//            perror(PID);
         }
 
+        if (target->PID != -1)
+            filler(buffer, "stats", NULL, 0, 0);
 
-        for (int i = 0; i < target->numberOfChildren; i++)
-        {
-            int pid = target->children[i]->PID;
-            char pidChar[100];
-            int lenPid = 0;
-
-            while (pid)
-            {
-                pidChar[lenPid++] = (pid % 10) + '0';
-                pid /= 10;
-            }
-
-            while (lenPid)  // buf concatenare cu pid
-            {
-                buf[index++] = pidChar[lenPid - 1];
-                lenPid--;
-            }
-
-            buf[index++] = '/';
-        }
-
-        buf[index++] = '\0';
-
-        buffer = buf; // buffer points to the new location
+        return 0;
     }
-    else{
-        perror("operation failed: ");
+    else
         return -1;
-    }
+}
+
+
+static int _open(const char *path, struct fuse_file_info *fileInfo)
+{
+    char *nonConstPath = (char *) malloc(sizeof(char) * strlen(path));
+    strcpy(nonConstPath, path);
+
+    process *requestedProcess;
+    int returnNumber = getProcess(nonConstPath, &requestedProcess);
+
+    // path is either invalid or requested item is a directory
+    if (returnNumber == -1 || returnNumber == 0)
+        return -1;
+
+    if ((fileInfo->flags & O_ACCMODE) != O_RDONLY)
+        return -1;
 
     return 0;
 }
 
 
-static int _read(const char *path, char *buffer, size_t size, off_t offset, struct  fuse_file_info *fileInfo) {
+static int _read(const char *path, char *buffer, size_t size, off_t offset, struct fuse_file_info *fileInfo) {
+    (void) fileInfo;
+
+    char *nonConstPath = (char *) malloc(sizeof(char) * strlen(path));
+    strcpy(nonConstPath, path);
+
     process *requestedProcess;
-    char *nonConstPath = (char*) malloc(sizeof(char) * strlen(path));
     int returnNumber = getProcess(nonConstPath, &requestedProcess);
 
     // path is either invalid or requested item is a directory
@@ -372,7 +308,8 @@ static int _read(const char *path, char *buffer, size_t size, off_t offset, stru
 
     // the number of bytes which can be copied cannot exceed the total size
     // of the source - the size of the offset;
-    size_t numberOfBytesCopied = (size < strlen(requestedProcess->status) - offset) ? size : strlen(requestedProcess->status) - offset;
+    size_t numberOfBytesCopied = (size < strlen(requestedProcess->status) - offset) ? size :
+                                 strlen(requestedProcess->status) - offset;
 
     memcpy(buffer, requestedProcess->status + offset, numberOfBytesCopied);
 
@@ -382,17 +319,34 @@ static int _read(const char *path, char *buffer, size_t size, off_t offset, stru
 
 
 static struct fuse_operations implementedOperations = {
-    .getattr = &_getattr,
-    .readdir = &_readdir,
-    .read = &_read
+        .getattr = &_getattr,
+        .readdir = &_readdir,
+        .open = &_open,
+        .read = &_read
 };
 
+
 void testTree(process *process){
-    printf("Process %d:\n", process->PID);
-    for(int i = 0; i < process->numberOfChildren; i++){
-        printf("----> Child %d of process %d\n", process->children[i]->PID, process->PID);
+    char PID[20], childPID[20], message[100];
+    sprintf(PID, "%d", process->PID);
+
+    strcpy(message, "Process ");
+    strcat(message, PID);
+    strcat(message, ":");
+    perror(message);
+
+    for(int i = 0; i < process->numberOfChildren; i++) {
+        sprintf(childPID, "%d", process->children[i]->PID);
+        strcpy(message, "----> Child ");
+        strcat(message, childPID);
+        strcat(message, " of process ");
+        strcat(message, PID);
+        strcat(message, "");
+
+        perror(message);
     }
-    printf("\n");
+    perror("\n");
+
     for(int i = 0; i < process->numberOfChildren; i++){
         testTree(process->children[i]);
     }
@@ -400,15 +354,16 @@ void testTree(process *process){
 
 
 int main(int argc, char **argv) {
-//    printf("%s\n",);
+    timeOfMount = time(NULL);
 
     // initializing file system root
-    rootOfFS = (process *) malloc(sizeof (process));
+    rootOfFS = (process *) malloc(sizeof(process));
     rootOfFS->PID = -1;
     rootOfFS->numberOfChildren = 1;
     rootOfFS->status = NULL;
-    rootOfFS->children[0] = (process *) malloc(sizeof (process));
+    rootOfFS->children[0] = (process *) malloc(sizeof(process));
     rootOfFS->children[0]->PID = 1;
+
 
     int operationStatus;
     if ((operationStatus = constructTreeOfProcesses(rootOfFS->children[0])) != 0) {
@@ -417,7 +372,7 @@ int main(int argc, char **argv) {
         return 1;
     }
 
-//    testTree(rootOfFS->children[0]);
+    testTree(rootOfFS->children[0]);
 
     return fuse_main(argc, argv, &implementedOperations, NULL);
 }
