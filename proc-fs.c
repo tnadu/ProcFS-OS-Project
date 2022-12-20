@@ -25,7 +25,7 @@ process *rootOfFS;
 // Proc.status          -> read from end of pipe
 
 int setStatus(process *process) {
-    char catPathBuff[25], PIDtoChar[8];
+    char catPathBuff[100], PIDtoChar[20];
 
     // Construct the correct path to the status file of the process
     sprintf(PIDtoChar, "%d", process->PID);
@@ -59,6 +59,7 @@ int setStatus(process *process) {
             // first arg -> command
             // second arg -> arguments
             execvp(cmd[0], cmd);
+            exit(0);
 
         } else{
             // Parent process:
@@ -89,11 +90,12 @@ int constructTreeOfProcesses(process *process) {
         return operationStatus;
 
     char catPathBuff[200], PIDtoChar[40];
-    char *readBuffer = (char *) malloc(sizeof(char) * 255);
+    char *readBuffer = (char *) malloc(sizeof(char) * 2000);
 
     // Construct the correct path to the file that contains
     // the children processes
     sprintf(PIDtoChar, "%d", process->PID);
+    printf("\n---%s---", PIDtoChar);
     strcpy(catPathBuff, "/proc/");
     strcat(catPathBuff, PIDtoChar);
     strcat(catPathBuff, "/task/");
@@ -137,13 +139,16 @@ int constructTreeOfProcesses(process *process) {
             // and recursively call this function for the children
             int numOfChildren = 0;
             char *childProcess = strtok(readBuffer, " ");
-            while(childProcess != NULL){
-                // First allocate memory for the children
-                process->children[numOfChildren] = malloc(sizeof(process));
-                // Set its PID
-                process->children[numOfChildren]->PID = atoi(childProcess);
+            while(childProcess != NULL) {
+                if (atoi(childProcess) != getppid()) {
+                    // First allocate memory for the children
+                    process->children[numOfChildren] = malloc(sizeof(process));
+                    // Set its PID
+                    process->children[numOfChildren]->PID = atoi(childProcess);
 
-                numOfChildren += 1;
+                    numOfChildren += 1;
+                }
+
                 childProcess = strtok(NULL, " ");
             }
             process->numberOfChildren = numOfChildren;
@@ -382,6 +387,17 @@ static struct fuse_operations implementedOperations = {
     .read = &_read
 };
 
+void testTree(process *process){
+    printf("Process %d:\n", process->PID);
+    for(int i = 0; i < process->numberOfChildren; i++){
+        printf("----> Child %d of process %d\n", process->children[i]->PID, process->PID);
+    }
+    printf("\n");
+    for(int i = 0; i < process->numberOfChildren; i++){
+        testTree(process->children[i]);
+    }
+}
+
 
 int main(int argc, char **argv) {
 //    printf("%s\n",);
@@ -400,6 +416,8 @@ int main(int argc, char **argv) {
         fprintf(stderr, "Tree construction failed at process #%d", operationStatus);
         return 1;
     }
+
+//    testTree(rootOfFS->children[0]);
 
     return fuse_main(argc, argv, &implementedOperations, NULL);
 }
