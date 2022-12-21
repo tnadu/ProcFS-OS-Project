@@ -1,14 +1,14 @@
 #define FUSE_USE_VERSION 31
 
-#include <fuse.h>
+#include </usr/include/fuse3/fuse.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <unistd.h>
 #include <sys/types.h>
-#include <sys/wait.h>
 #include <time.h>
 #include <string.h>
 #include <limits.h>
+#include <errno.h>
 
 
 typedef struct proc {
@@ -45,16 +45,16 @@ void setStatus(process *process) {
 }
 
 
-int constructTreeOfProcesses(process *process) {
+int constructTreeOfProcesses(process *currentProcess) {
     // First of all, set the status file for the current process
-    setStatus(process);
+    setStatus(currentProcess);
 
     char catPathBuff[200], PIDtoChar[20];
     char *readBuffer = malloc(sizeof(char) * 4000);
 
     // Construct the correct path to the file that contains
     // the children processes
-    sprintf(PIDtoChar, "%d", process->PID);
+    sprintf(PIDtoChar, "%d", currentProcess->PID);
     strcpy(catPathBuff, "/proc/");
     strcat(catPathBuff, PIDtoChar);
     strcat(catPathBuff, "/task/");
@@ -77,18 +77,18 @@ int constructTreeOfProcesses(process *process) {
     char *childProcess = strtok(readBuffer, " ");
     while (childProcess != NULL) {
         // First allocate memory for the children
-        process->children[numOfChildren] = malloc(sizeof(process));
+        currentProcess->children[numOfChildren] = malloc(sizeof(process));
         // Set its PID
-        process->children[numOfChildren]->PID = atoi(childProcess);
+        currentProcess->children[numOfChildren]->PID = atoi(childProcess);
 
         numOfChildren++;
         childProcess = strtok(NULL, " ");
     }
 
-    process->numberOfChildren = numOfChildren;
+    currentProcess->numberOfChildren = numOfChildren;
 
-    for (int i = 0; i < process->numberOfChildren; i++) {
-        constructTreeOfProcesses(process->children[i]);
+    for (int i = 0; i < currentProcess->numberOfChildren; i++) {
+        constructTreeOfProcesses(currentProcess->children[i]);
     }
 
     return 0;
@@ -194,7 +194,7 @@ int getProcess(char *path, process **returnedProcess) {
 
 
 //when the system asks for the attributes of a specific file
-static int _getattr(const char *path, struct stat *status, struct fuse_file_info *fi) {
+static int p_getattr(const char *path, struct stat *status, struct fuse_file_info *fi) {
     (void) fi;
     memset(status, 0, sizeof(struct stat));
 
@@ -204,6 +204,16 @@ static int _getattr(const char *path, struct stat *status, struct fuse_file_info
     process *target;
 
     int returnStatus = getProcess(nonConstPath, &target);
+
+
+//    char message[100], PID[10];
+//    sprintf(PID, "%d", target->PID);
+//    strcpy(message, "GET_ATTR -- Process ");
+//    strcat(message, PID);
+//    strcat(message, ":");
+//    perror(message);
+//    fprintf(stdout, "GETATTR -- Process %d:\n", target->PID);
+//    fflush(stdout);
 
     if (target != NULL) {
         status->st_uid = getuid(); // The owner of the file/directory is the user who mounted the filesystem
@@ -219,7 +229,7 @@ static int _getattr(const char *path, struct stat *status, struct fuse_file_info
         } else {
             status->st_mode = S_IFREG | 0664; // regular files; owner->read,write; others -> read
             status->st_nlink = 1;
-            status->st_size = 0;
+            status->st_size = strlen(target->status);
         }
 
         return 0;
@@ -229,7 +239,7 @@ static int _getattr(const char *path, struct stat *status, struct fuse_file_info
 }
 
 
-static int _readdir(const char *path, void *buffer, fuse_fill_dir_t filler, off_t offset, struct fuse_file_info *fileInfo, enum fuse_readdir_flags flags) {
+static int p_readdir(const char *path, void *buffer, fuse_fill_dir_t filler, off_t offset, struct fuse_file_info *fileInfo, enum fuse_readdir_flags flags) {
     (void) offset;
     (void) fileInfo;
     (void) flags;
@@ -240,7 +250,15 @@ static int _readdir(const char *path, void *buffer, fuse_fill_dir_t filler, off_
     process *target;
     int returnStatus = getProcess(nonConstPath, &target);
 
-    char PID[40];
+//    char message[100];
+    char PID[10];
+//    sprintf(PID, "%d", target->PID);
+//    strcpy(message, "READDIR -- Process ");
+//    strcat(message, PID);
+//    strcat(message, ":");
+//    perror(message);
+
+
     if (returnStatus == 0) {
         filler(buffer, ".", NULL, 0, 0);
         filler(buffer, "..", NULL, 0, 0);
@@ -261,9 +279,9 @@ static int _readdir(const char *path, void *buffer, fuse_fill_dir_t filler, off_
 }
 
 
-static int _open(const char *path, struct fuse_file_info *fileInfo)
+static int p_open(const char *path, struct fuse_file_info *fileInfo)
 {
-    char *nonConstPath = (char *) malloc(sizeof(char) * strlen(path));
+    char *nonConstPath = malloc(sizeof(char) * strlen(path));
     strcpy(nonConstPath, path);
 
     process *requestedProcess;
@@ -271,23 +289,28 @@ static int _open(const char *path, struct fuse_file_info *fileInfo)
 
     // path is either invalid or requested item is a directory
     if (returnNumber == -1 || returnNumber == 0)
-        return -1;
+        return -ENOENT;
 
     if ((fileInfo->flags & O_ACCMODE) != O_RDONLY)
-        return -1;
+        return -AT_EACCESS;
 
     return 0;
 }
 
 
-static int _read(const char *path, char *buffer, size_t size, off_t offset, struct fuse_file_info *fileInfo) {
+static int p_read(const char *path, char *buffer, size_t size, off_t offset, struct fuse_file_info *fileInfo) {
     (void) fileInfo;
 
-    char *nonConstPath = (char *) malloc(sizeof(char) * strlen(path));
+    char *nonConstPath = malloc(sizeof(char) * strlen(path));
     strcpy(nonConstPath, path);
 
     process *requestedProcess;
     int returnNumber = getProcess(nonConstPath, &requestedProcess);
+
+//    char message[6000];
+//    strcpy(message, requestedProcess->status);
+//    perror(message);
+//    fflush(stderr);
 
     // path is either invalid or requested item is a directory
     if (returnNumber == -1 || returnNumber == 0)
@@ -311,23 +334,34 @@ static int _read(const char *path, char *buffer, size_t size, off_t offset, stru
     size_t numberOfBytesCopied = (size < strlen(requestedProcess->status) - offset) ? size :
                                  strlen(requestedProcess->status) - offset;
 
+//    size_t numberOfBytesCopied;
+//    if (size < strlen(requestedProcess->status) - offset)
+//        numberOfBytesCopied = size;
+//    else
+//        numberOfBytesCopied = strlen(requestedProcess->status) - offset;
+//
     memcpy(buffer, requestedProcess->status + offset, numberOfBytesCopied);
 
+//    char message1[] = "Hello world!\0";
+//    memcpy(buffer, "Hello world!", 12);
+
     // 'read' must return the total number of successfully copied bytes
-    return (int) numberOfBytesCopied;
+//    return numberOfBytesCopied;
+    return numberOfBytesCopied;
 }
 
 
 static struct fuse_operations implementedOperations = {
-        .getattr = &_getattr,
-        .readdir = &_readdir,
-        .open = &_open,
-        .read = &_read
+        .getattr = p_getattr,
+        .readdir = p_readdir,
+        .open = &p_open,
+        .read = p_read
 };
 
 
 void testTree(process *process){
-    char PID[20], childPID[20], message[100];
+    char PID[20]; // childPID[20],
+    char message[6000];
     sprintf(PID, "%d", process->PID);
 
     strcpy(message, "Process ");
@@ -335,16 +369,19 @@ void testTree(process *process){
     strcat(message, ":");
     perror(message);
 
-    for(int i = 0; i < process->numberOfChildren; i++) {
-        sprintf(childPID, "%d", process->children[i]->PID);
-        strcpy(message, "----> Child ");
-        strcat(message, childPID);
-        strcat(message, " of process ");
-        strcat(message, PID);
-        strcat(message, "");
+    strcpy(message, process->status);
+    perror(message);
 
-        perror(message);
-    }
+//    for(int i = 0; i < process->numberOfChildren; i++) {
+//        sprintf(childPID, "%d", process->children[i]->PID);
+//        strcpy(message, "----> Child ");
+//        strcat(message, childPID);
+//        strcat(message, " of process ");
+//        strcat(message, PID);
+//        strcat(message, "");
+//
+//        perror(message);
+//    }
     perror("\n");
 
     for(int i = 0; i < process->numberOfChildren; i++){
@@ -372,7 +409,7 @@ int main(int argc, char **argv) {
         return 1;
     }
 
-    testTree(rootOfFS->children[0]);
+//    testTree(rootOfFS->children[0]);
 
     return fuse_main(argc, argv, &implementedOperations, NULL);
 }
