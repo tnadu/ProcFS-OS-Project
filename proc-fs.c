@@ -1,16 +1,18 @@
 #define FUSE_USE_VERSION 31
 
-#include <fuse.h>
-#include <stdio.h>
+#include </usr/include/fuse3/fuse.h>
 #include <stdlib.h>
 #include <unistd.h>
 #include <sys/types.h>
-#include <sys/wait.h>
 #include <time.h>
-#include <string.h>
 #include <limits.h>
+#include <errno.h>
+#include <stdio.h>
+#include <string.h>
 
 
+// struct with which the process
+// tree structure will be stored
 typedef struct proc {
     int PID, numberOfChildren;
     struct proc *children[201];
@@ -21,93 +23,151 @@ process *rootOfFS;
 time_t timeOfMount;
 
 
-// Function that will use a pipe to:
-// cat /proc/PID/status -> write to the end of pipe
-// Proc.status          -> read from end of pipe
-void setStatus(process *process) {
-    char catPathBuff[400], PIDtoChar[20];
+// DESCRIPTION:
+//      Recursive function which reconstructs the tree structure of
+// running processes at mount-time in a DFS manner. 'currentProcess'
+// holds the process which is currently being visited.
+//
+// CALLING METHOD:
+//      Memory for a Proc struct must be allocated beforehand. In order
+// to reconstruct a specific subtree, that subtree's root node's PID
+// must be specified in the PID field of the newly allocated struct.
+// In order to reconstruct the whole process tree, '1' will be stored
+// in said field. When the function returns, the subtree can be accessed
+// via the provided pointer.
+//
+// RETURN VALUES:
+// - 0 -> success
+// - n > 0 -> PID of the process at which the function encountered an error 
+int constructTreeOfProcesses(process *currentProcess) {
+    char convertedPID[10];  // necessary when appending to paths
 
-    // Construct the correct path to the status file of the process
-    sprintf(PIDtoChar, "%d", process->PID);
-    strcpy(catPathBuff, "/proc/");
-    strcat(catPathBuff, PIDtoChar);
-    strcat(catPathBuff, "/status");
-
-    process->status = malloc(sizeof(char) * 6000);
-
-    int statusFileDescriptor = open(catPathBuff, O_RDONLY);
-
-    int StatusOffset = 0, nbytes;
-    while ((nbytes = read(statusFileDescriptor, process->status + StatusOffset, 255)) > 0)
-        StatusOffset += nbytes;
-
-    close(statusFileDescriptor);
-}
-
-
-int constructTreeOfProcesses(process *process) {
-    // First of all, set the status file for the current process
-    setStatus(process);
-
-    char catPathBuff[200], PIDtoChar[20];
-    char *readBuffer = malloc(sizeof(char) * 4000);
-
-    // Construct the correct path to the file that contains
-    // the children processes
-    sprintf(PIDtoChar, "%d", process->PID);
-    strcpy(catPathBuff, "/proc/");
-    strcat(catPathBuff, PIDtoChar);
-    strcat(catPathBuff, "/task/");
-    strcat(catPathBuff, PIDtoChar);
-    strcat(catPathBuff, "/children");
-
-    int childrenFileDescriptor = open(catPathBuff, O_RDONLY);
-
-    int StatusOffset = 0, nbytes;
-    while ((nbytes = read(childrenFileDescriptor, readBuffer + StatusOffset, 255)) > 0) {
-        StatusOffset += nbytes;
+    // verify memory allocation was successful
+    if ((currentProcess->status = malloc(sizeof(char) * 8096)) == NULL) {
+        return currentProcess->PID;
     }
 
-    close(childrenFileDescriptor);
+    // construct the 'status' file's path for the current process
+    char *statusPath;
+    // verify memory allocation was successful
+    if ((statusPath = malloc(sizeof (char) * 42)) == NULL)
+        return currentProcess->PID;
 
-    // After we get the children processes, we need to build
-    // the Proc *children array for the current process,
-    // and recursively call this function for the children
-    int numOfChildren = 0;
-    char *childProcess = strtok(readBuffer, " ");
+    // verify no errors were encountered while converting integer
+    if (sprintf(convertedPID, "%d", currentProcess->PID) < 0)
+        return currentProcess->PID;
+
+    // unless sprintf() and malloc fail, it is guaranteed that there is
+    // enough memory in 'statusPath' for all the string operations bellow
+    strcpy(statusPath, "/proc/");
+    strcat(statusPath, convertedPID);
+    strcat(statusPath, "/status");
+    
+    int statusFileDescriptor;
+    // verify no errors were encountered when opening file
+    if ((statusFileDescriptor = open(statusPath, O_RDONLY)) == -1)
+        return currentProcess->PID;
+
+    size_t offset = 0, bytesRead;
+    // storing content of the 'status' file into the corresponding process's field;
+    // 1KB will be read at a time
+    while ((bytesRead = read(statusFileDescriptor, currentProcess->status + offset, 1024)) > 0 && offset < 8096)
+        offset += bytesRead;
+
+    // verify no errors were encountered while reading file
+    if (bytesRead == -1)
+        return currentProcess->PID;
+
+    // verify no errors were encountered while closing file
+    if (close(statusFileDescriptor) == -1)
+        return currentProcess->PID;
+
+
+    // construct the 'children' file's path for the current process
+    char *childrenReadBuffer;
+    // verify memory allocation was successful
+    if ((childrenReadBuffer = malloc(sizeof(char) * 8096)) == NULL)
+        return currentProcess->PID;
+    
+    char *childrenPath = statusPath;    // reusing memory allocated for the previous path
+    // verify no errors were encountered
+    if (sprintf(convertedPID, "%d", currentProcess->PID) < 0)
+        return currentProcess->PID;
+
+    // unless sprintf() and malloc fail, it is guaranteed that there is
+    // enough memory in 'childrenPath' for all string operations bellow
+    strcpy(childrenPath, "/proc/");
+    strcat(childrenPath, convertedPID);
+    strcat(childrenPath, "/task/");
+    strcat(childrenPath, convertedPID);
+    strcat(childrenPath, "/children");
+
+    int childrenFileDescriptor;
+    // verify no errors were encountered when opening file
+    if ((childrenFileDescriptor = open(childrenPath, O_RDONLY)) == -1)
+        return currentProcess->PID;
+
+    offset = 0;
+    // storing content of the 'children' file into the corresponding buffer;
+    // 1KB will be read at a time
+    while ((bytesRead = read(childrenFileDescriptor, childrenReadBuffer + offset, 1024)) > 0 && offset < 8096)
+        offset += bytesRead;
+
+    // verify no errors were encountered while reading file
+    if (bytesRead == -1)
+        return currentProcess->PID;
+
+    // verify no errors were encountered while closing file
+    if (close(childrenFileDescriptor) == -1)
+        return currentProcess->PID;
+
+    free(childrenPath);
+
+
+    // allocating memory for every PID found in the 'children' file
+    char *childProcess = strtok(childrenReadBuffer, " ");
+    currentProcess->numberOfChildren = 0;
     while (childProcess != NULL) {
-        // First allocate memory for the children
-        process->children[numOfChildren] = malloc(sizeof(process));
-        // Set its PID
-        process->children[numOfChildren]->PID = atoi(childProcess);
+        // verify memory allocation was successful
+        if ((currentProcess->children[currentProcess->numberOfChildren] = malloc(sizeof(process))) == NULL)
+            return currentProcess->PID;
+        currentProcess->children[currentProcess->numberOfChildren]->PID = atoi(childProcess);
 
-        numOfChildren++;
+        currentProcess->numberOfChildren++;
         childProcess = strtok(NULL, " ");
     }
 
-    process->numberOfChildren = numOfChildren;
+    free(childrenReadBuffer);
 
-    for (int i = 0; i < process->numberOfChildren; i++) {
-        constructTreeOfProcesses(process->children[i]);
+
+    // building process subtrees by recursively calling function upon all the current process's children
+    int subtreeConstructionStatus;
+    for (int i = 0; i < currentProcess->numberOfChildren; i++) {
+        subtreeConstructionStatus = constructTreeOfProcesses(currentProcess->children[i]);
+
+        // verify no errors were encountered while building subtrees
+        if (subtreeConstructionStatus != 0)
+            return subtreeConstructionStatus;
     }
 
     return 0;
 }
 
 
+
 // DESCRIPTION
-// 'returnedProcess' holds:
+// 'requestedProcess' holds:
 //  - the pointer to the specified process, if the path is valid
 //  - NULL, otherwise
 //
-// return values:
+// RETURN VALUES:
 //  - '-1' -> invalid path
 //  - '0' -> a process's dir was requested
 //  - '1' -> the 'stats' file of a process was requested
-int getProcess(char *path, process **returnedProcess) {
+int getProcess(char *path, process **requestedProcess) {
     // all paths must begin from the root of the file system
     if (*path != '/') {
-        *returnedProcess = NULL;
+        *requestedProcess = NULL;
         return -1;
     }
 
@@ -116,11 +176,11 @@ int getProcess(char *path, process **returnedProcess) {
 
     // the provided path is the root of the FS
     if (currentItemInPath == NULL) {
-        *returnedProcess = rootOfFS;
+        *requestedProcess = rootOfFS;
         return 0;
     }
 
-    *returnedProcess = rootOfFS;    // points to the root of the FS (PID = -1)
+    *requestedProcess = rootOfFS;    // points to the root of the FS (PID = -1)
 
 
     // according to the signature of the 'strtol' function, a char pointer is used in
@@ -132,11 +192,15 @@ int getProcess(char *path, process **returnedProcess) {
     // a numerical value, it might still be possible that invalid characters where
     // encountered, which is why the provided char pointer must be either NULL or the null char
     if (strtol(currentItemInPath, &firstNonDigit, 0) != 1 && firstNonDigit != NULL && *firstNonDigit != '\0') {
-        *returnedProcess = NULL;
+        // the 'README' file was requested
+        if (strcmp(currentItemInPath, "README") == 0)
+            return 1;   // corresponding return status
+
+        *requestedProcess = NULL;
         return -1;
     }
 
-    *returnedProcess = rootOfFS->children[0];    // points to the root process (PID = 1)
+    *requestedProcess = rootOfFS->children[0];    // points to the root process (PID = 1)
 
 
     int statsFound = 0;     // used to mark that the 'stats' file was encountered in the path
@@ -155,24 +219,24 @@ int getProcess(char *path, process **returnedProcess) {
             }
             // invalid path
             else {
-                *returnedProcess = NULL;
+                *requestedProcess = NULL;
                 return -1;
             }
         }
 
         // searching the children of the current process for the child with the specified PID 
-        int i, numberOfChildrenOfTheCurrentProcess = (*returnedProcess)->numberOfChildren;
+        int i, numberOfChildrenOfTheCurrentProcess = (*requestedProcess)->numberOfChildren;
 
         for (i = 0; i < numberOfChildrenOfTheCurrentProcess; i++)
             // specified process was found
-            if ((*returnedProcess)->children[i]->PID == currentPID) {
-                *returnedProcess = (*returnedProcess)->children[i];
+            if ((*requestedProcess)->children[i]->PID == currentPID) {
+                *requestedProcess = (*requestedProcess)->children[i];
                 break;
             }
 
         // no children with the specified PID could be found
         if (i == numberOfChildrenOfTheCurrentProcess) {
-            *returnedProcess = NULL;
+            *requestedProcess = NULL;
             return -1;
         }
     }
@@ -182,7 +246,7 @@ int getProcess(char *path, process **returnedProcess) {
     if (statsFound == 1) {
 
         if (strtok(NULL, "/") != NULL) {
-            *returnedProcess = NULL;
+            *requestedProcess = NULL;
             return -1;
         }
 
@@ -193,105 +257,125 @@ int getProcess(char *path, process **returnedProcess) {
 }
 
 
-//when the system asks for the attributes of a specific file
-static int _getattr(const char *path, struct stat *status, struct fuse_file_info *fi) {
+
+static int p_getattr(const char *path, struct stat *status, struct fuse_file_info *fi) {
     (void) fi;
     memset(status, 0, sizeof(struct stat));
 
-    char *nonConstPath = (char *) malloc(sizeof(char) * strlen(path));
+    // in order to avoid discarding the 'const' qualifier when passing arguments to string
+    // functions used in getProcess(), a non const copy of the provided path will be made
+    char *nonConstPath;
+    // verify memory allocation was successful
+    if ((nonConstPath = malloc(sizeof(char) * strlen(path))) == NULL)
+        return ENOMEM;
     strcpy(nonConstPath, path);
 
-    process *target;
-
-    int returnStatus = getProcess(nonConstPath, &target);
-
-    if (target != NULL) {
-        status->st_uid = getuid(); // The owner of the file/directory is the user who mounted the filesystem
-        status->st_gid = getgid(); // The group of the file/directory is the same as the group of the user who mounted the filesystem
-        status->st_atime = timeOfMount; // The last "a"ccess of the file/directory is right now
-        status->st_mtime = timeOfMount; // The last "m"odification of the file/directory is right now
-
-        if (returnStatus == 0) // path = directory
-        {
-            //st_mode specifies if file is a regular file, directory or other
-            status->st_mode = S_IFDIR | 0775; //directory;only the owner of the file -> write, execute the directory, other users-> read and execute
-            status->st_nlink = 2;
-        } else {
-            status->st_mode = S_IFREG | 0664; // regular files; owner->read,write; others -> read
-            status->st_nlink = 1;
-            status->st_size = 0;
-        }
-
-        return 0;
-    }
-    else
-        return -1;
-}
-
-
-static int _readdir(const char *path, void *buffer, fuse_fill_dir_t filler, off_t offset, struct fuse_file_info *fileInfo, enum fuse_readdir_flags flags) {
-    (void) offset;
-    (void) fileInfo;
-    (void) flags;
-
-    char *nonConstPath = (char *) malloc(sizeof(char) * strlen(path));
-    strcpy(nonConstPath, path);
-
-    process *target;
-    int returnStatus = getProcess(nonConstPath, &target);
-
-    char PID[40];
-    if (returnStatus == 0) {
-        filler(buffer, ".", NULL, 0, 0);
-        filler(buffer, "..", NULL, 0, 0);
-
-        for (int i = 0; i < target->numberOfChildren; i++) {
-            sprintf(PID, "%d", target->children[i]->PID);
-            filler(buffer, PID, NULL, 0, 0);
-//            perror(PID);
-        }
-
-        if (target->PID != -1)
-            filler(buffer, "stats", NULL, 0, 0);
-
-        return 0;
-    }
-    else
-        return -1;
-}
-
-
-static int _open(const char *path, struct fuse_file_info *fileInfo)
-{
-    char *nonConstPath = (char *) malloc(sizeof(char) * strlen(path));
-    strcpy(nonConstPath, path);
-
+    // searching the corresponding process struct of the provided path
     process *requestedProcess;
-    int returnNumber = getProcess(nonConstPath, &requestedProcess);
+    int returnStatus = getProcess(nonConstPath, &requestedProcess);
+    free(nonConstPath);
 
-    // path is either invalid or requested item is a directory
-    if (returnNumber == -1 || returnNumber == 0)
-        return -1;
 
-    if ((fileInfo->flags & O_ACCMODE) != O_RDONLY)
-        return -1;
+    // specified path is invalid
+    if (requestedProcess == NULL)
+        return EINVAL;
+
+    // common properties of files and directories
+    // the owner of the file/directory is the user who mounted the filesystem
+    status->st_uid = getuid();
+    // the group of the file/directory is that of the group of the user who mounted the filesystem
+    status->st_gid = getgid();
+    // the mount-time will be considered as both the access and the last-modified time
+    status->st_atime = timeOfMount;
+    status->st_mtime = timeOfMount;
+
+    // provided path references a directory
+    if (returnStatus == 0)
+    {
+        // specifying that the path is that of a directory and
+        // setting the permissions to RX-RX-RX
+        status->st_mode = S_IFDIR | 0555;
+        status->st_nlink = 2;   // both the current directory and its parent point to itself
+    }
+    // provided path references a file
+    else {
+        // specifying that the path is that of a file and
+        // setting the permission to R-R-R
+        status->st_mode = S_IFREG | 0444;
+        status->st_nlink = 1;   // only the parent directory points to the current file
+        status->st_size = strlen(requestedProcess->status);
+    }
 
     return 0;
 }
 
 
-static int _read(const char *path, char *buffer, size_t size, off_t offset, struct fuse_file_info *fileInfo) {
-    (void) fileInfo;
 
-    char *nonConstPath = (char *) malloc(sizeof(char) * strlen(path));
+static int p_readdir(const char *path, void *buffer, fuse_fill_dir_t filler, off_t offset, struct fuse_file_info *fileInfo, enum fuse_readdir_flags flags) {
+    (void) offset;
+    (void) fileInfo;
+    (void) flags;
+
+    // in order to avoid discarding the 'const' qualifier when passing arguments to string
+    // functions used in getProcess(), a non const copy of the provided path will be made
+    char *nonConstPath;
+    // verify memory allocation was successful
+    if ((nonConstPath = malloc(sizeof(char) * strlen(path))) == NULL)
+        return ENOMEM;
     strcpy(nonConstPath, path);
 
+    // searching the corresponding process struct of the provided path
     process *requestedProcess;
-    int returnNumber = getProcess(nonConstPath, &requestedProcess);
+    int returnStatus = getProcess(nonConstPath, &requestedProcess);
+    free(nonConstPath);
 
-    // path is either invalid or requested item is a directory
-    if (returnNumber == -1 || returnNumber == 0)
-        return -1;
+    // operation is only permitted on directories
+    if (returnStatus != 0)
+        return EINVAL;
+
+    char PID[10];       // needed when passing PIDs to filler() 
+
+    filler(buffer, ".", NULL, 0, 0);
+    filler(buffer, "..", NULL, 0, 0);
+
+    // listing all the current process's children
+    for (int i = 0; i < requestedProcess->numberOfChildren; i++) {
+        sprintf(PID, "%d", requestedProcess->children[i]->PID);
+        filler(buffer, PID, NULL, 0, 0);
+    }
+
+    // the root of the filesystem is not a process,
+    // therefore it doesn't contain a 'stats' file
+    if (requestedProcess->PID != -1)
+        filler(buffer, "stats", NULL, 0, 0);
+    // it does, however, contain a 'README' file
+    else
+        filler(buffer, "README", NULL, 0, 0);
+
+    return 0;
+}
+
+
+static int p_read(const char *path, char *buffer, size_t size, off_t offset, struct fuse_file_info *fileInfo) {
+    (void) fileInfo;
+
+    // in order to avoid discarding the 'const' qualifier when passing arguments to string
+    // functions used in getProcess(), a non const copy of the provided path will be made
+    char *nonConstPath;
+    // verify memory allocation was successful
+    if ((nonConstPath = malloc(sizeof(char) * strlen(path))) == NULL)
+        return ENOMEM;
+    strcpy(nonConstPath, path);
+
+    // searching the corresponding process struct of the provided path
+    process *requestedProcess;
+    int returnStatus = getProcess(nonConstPath, &requestedProcess);
+    free(nonConstPath);
+
+
+    // operation is permitted only on files
+    if (returnStatus != 1)
+        return EINVAL;
 
     // when offset is at or after the end of file or when size is 0,
     // the specification of 'read' mentions that '0' shall be returned
@@ -314,65 +398,60 @@ static int _read(const char *path, char *buffer, size_t size, off_t offset, stru
     memcpy(buffer, requestedProcess->status + offset, numberOfBytesCopied);
 
     // 'read' must return the total number of successfully copied bytes
-    return (int) numberOfBytesCopied;
+    return numberOfBytesCopied;
 }
 
 
+
+// loading implemented functions
 static struct fuse_operations implementedOperations = {
-        .getattr = &_getattr,
-        .readdir = &_readdir,
-        .open = &_open,
-        .read = &_read
+        .getattr = p_getattr,
+        .readdir = p_readdir,
+        .read = p_read
 };
 
 
-void testTree(process *process){
-    char PID[20], childPID[20], message[100];
-    sprintf(PID, "%d", process->PID);
-
-    strcpy(message, "Process ");
-    strcat(message, PID);
-    strcat(message, ":");
-    perror(message);
-
-    for(int i = 0; i < process->numberOfChildren; i++) {
-        sprintf(childPID, "%d", process->children[i]->PID);
-        strcpy(message, "----> Child ");
-        strcat(message, childPID);
-        strcat(message, " of process ");
-        strcat(message, PID);
-        strcat(message, "");
-
-        perror(message);
-    }
-    perror("\n");
-
-    for(int i = 0; i < process->numberOfChildren; i++){
-        testTree(process->children[i]);
-    }
-}
-
-
 int main(int argc, char **argv) {
-    timeOfMount = time(NULL);
+    timeOfMount = time(NULL);   // storing the mount-time for future reference in getattr()
 
     // initializing file system root
-    rootOfFS = (process *) malloc(sizeof(process));
-    rootOfFS->PID = -1;
-    rootOfFS->numberOfChildren = 1;
-    rootOfFS->status = NULL;
-    rootOfFS->children[0] = (process *) malloc(sizeof(process));
+    // verifying that the memory allocation was successful
+    if ((rootOfFS = malloc(sizeof(process))) == NULL)
+        return ENOMEM;
+
+    rootOfFS->PID = -1;     // convention to indicate that the current struct is the root of the file system
+    rootOfFS->numberOfChildren = 1;     // its only child is the systemd process
+    // the content of 'README'
+    rootOfFS->status = "██████╗ ██████╗  ██████╗  ██████╗███████╗███████╗\n"
+                       "██╔══██╗██╔══██╗██╔═══██╗██╔════╝██╔════╝██╔════╝\n"
+                       "██████╔╝██████╔╝██║   ██║██║     █████╗  ███████╗\n"
+                       "██╔═══╝ ██╔══██╗██║   ██║██║     ██╔══╝  ╚════██║\n"
+                       "██║     ██║  ██║╚██████╔╝╚██████╗██║     ███████║\n"
+                       "╚═╝     ╚═╝  ╚═╝ ╚═════╝  ╚═════╝╚═╝     ╚══════╝\n"
+                       "                                                 \n"
+                       "\tProcFS is a fuse-based file system which aims\n"
+                       "to provide a snapshot of the running processes at\n"
+                       "mount-time. Unlike /proc, the directory structure\n"
+                       "of ProcFS maintains the process tree structure.\n"
+                       "Each directory represents a process and contains\n"
+                       "a 'stats' file with relevant data about the status\n"
+                       "of the corresponding process.\n\n"
+                       "\tProcFS was assigned as a lab project for the Operating\n"
+                       "Systems course of the University of Bucharest and can be\n"
+                       "used as desired. More information can be found here:\n"
+                       "\t\tgithub.com/playback0022/OS-ProcFS";
+    // verifying that the memory allocation was successful for the systemd process
+    if ((rootOfFS->children[0] = (process *) malloc(sizeof(process))) == NULL)
+        return ENOMEM;
     rootOfFS->children[0]->PID = 1;
 
 
     int operationStatus;
+    // checking that no errors were encountered in the construction of the process tree
     if ((operationStatus = constructTreeOfProcesses(rootOfFS->children[0])) != 0) {
-        fprintf(stdout, "Tree construction failed at process #%d", operationStatus);
-        fprintf(stderr, "Tree construction failed at process #%d", operationStatus);
+        fprintf(stderr, "Tree construction failed at process #%d\n", operationStatus);
         return 1;
     }
-
-    testTree(rootOfFS->children[0]);
 
     return fuse_main(argc, argv, &implementedOperations, NULL);
 }
